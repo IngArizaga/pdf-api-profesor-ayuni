@@ -206,6 +206,7 @@ def obtener_nombre_libro(file_id: str) -> str:
 
 if __name__ == "__main__":
     import uvicorn
-
-    print("🚀 Iniciando Servidor Profesor Ayuni...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    print(f"🚀 Iniciando Servidor Profesor Ayuni en puerto {port}...")
+    uvicorn.run(app, host="0.0.0.0", port=port)
