@@ -3,164 +3,209 @@ from pydantic import BaseModel
 import requests
 import PyPDF2
 import io
+import google.generativeai as genai
 import os
-from fastapi.middleware.cors import CORSMiddleware
+import json
 
-app = FastAPI(title="PDF API para Profesor Ayuni")
+app = FastAPI(title="Profesor Ayuni - Sistema Autónomo")
 
-# CORS para permitir GPT
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ==================== CONFIGURACIÓN ====================
+# TU API KEY REAL DE GOOGLE AI STUDIO
+GEMINI_API_KEY = "AIzaSyC5L47dAqWI-CgX0CMxdjtHV4SEbbX9y9k"
+genai.configure(api_key=GEMINI_API_KEY)
+
+# ==================== BIBLIOTECA DE PDFs ====================
+# TUS IDs REALES DE GOOGLE DRIVE
+BIBLIOTECA = {
+    "fisica": "1qtIP2Ms9Op_XapFr9sCK2CvTz_kfj0k9",
+    "civil": "11vF9zTQcrPQl3Yu4udxaHVLCxeRzWk71",
+    "admin": "1pKchzTFLqmNdGIZznVtejFhItz9yY98y"
+}
+
+# ==================== USUARIOS ====================
+USUARIOS = {
+    "estudiante1": "clave123",
+    "maria": "clave456",
+    "profesor": "admin123",
+    "luis": "password123"
+}
 
 
-class PDFRequest(BaseModel):
-    archivo: str
-    carpeta: str = "fisica_api"  # fisica_api, civil_api, admin_api
-    max_caracteres: int = 4000
+# ==================== MODELOS ====================
+class PreguntaRequest(BaseModel):
+    usuario: str
+    clave: str
+    pregunta: str
 
 
-class PDFResponse(BaseModel):
-    success: bool
-    contenido: str
-    archivo: str
-    paginas: int
-    error: str = None
+class N8NAuthRequest(BaseModel):
+    usuario: str
+    clave: str
 
 
-@app.post("/buscar-pdf", response_model=PDFResponse)
-async def buscar_pdf(request: PDFRequest):
-    try:
-        # URL base de tu Ngrok ACTUAL
-        NGROK_BASE = "https://e714395d7c19.ngrok-free.app"
+# ==================== ENDPOINTS PRINCIPALES ====================
 
-        pdf_url = f"{NGROK_BASE}/{request.carpeta}/{request.archivo}"
+@app.post("/preguntar")
+async def preguntar_auto(request: PreguntaRequest):
+    """Endpoint principal para preguntas de estudiantes"""
+    print(f"🎓 Pregunta de {request.usuario}: {request.pregunta}")
 
-        print(f"Buscando PDF: {pdf_url}")
+    # 1. Autenticación
+    if not autenticar_usuario(request.usuario, request.clave):
+        return {"success": False, "error": "❌ Credenciales inválidas"}
 
-        # Descargar PDF desde ngrok
-        response = requests.get(pdf_url, timeout=30)
+    # 2. Seleccionar PDF automáticamente
+    pdf_id = seleccionar_pdf_inteligente(request.pregunta)
 
-        if response.status_code != 200:
-            return PDFResponse(
-                success=False,
-                contenido="",
-                archivo=request.archivo,
-                paginas=0,
-                error=f"PDF no encontrado: {response.status_code}. URL: {pdf_url}"
-            )
+    # 3. Procesar PDF
+    texto_pdf = descargar_y_extraer_pdf(pdf_id)
 
-        # Extraer texto del PDF
-        pdf_file = io.BytesIO(response.content)
-        reader = PyPDF2.PdfReader(pdf_file)
+    # 4. Consultar a Gemini
+    respuesta = consultar_gemini(texto_pdf, request.pregunta, request.usuario)
 
-        texto_completo = ""
-        for i, pagina in enumerate(reader.pages):
-            texto_pagina = pagina.extract_text() or ""
-            texto_completo += f"--- Página {i + 1} ---\n{texto_pagina}\n\n"
+    return {
+        "success": True,
+        "usuario": request.usuario,
+        "pregunta": request.pregunta,
+        "respuesta": respuesta,
+        "libro_consultado": obtener_nombre_libro(pdf_id)
+    }
 
-        # Limitar tamaño
-        texto_limite = texto_completo[:request.max_caracteres]
 
-        return PDFResponse(
-            success=True,
-            contenido=texto_limite,
-            archivo=request.archivo,
-            paginas=len(reader.pages)
-        )
-
-    except Exception as e:
-        return PDFResponse(
-            success=False,
-            contenido="",
-            archivo=request.archivo,
-            paginas=0,
-            error=f"Error: {str(e)}"
-        )
+@app.post("/n8n-autenticar")
+async def autenticar_n8n(request: N8NAuthRequest):
+    """Endpoint para integración con N8N existente"""
+    if autenticar_usuario(request.usuario, request.clave):
+        return {
+            "success": True,
+            "usuario_id": request.usuario,
+            "mensaje": "Autenticación exitosa"
+        }
+    else:
+        return {
+            "success": False,
+            "mensaje": "Credenciales inválidas"
+        }
 
 
 @app.get("/")
 async def root():
     return {
-        "message": "PDF API para Profesor Ayuni - Funcionando con Ngrok",
-        "ngrok_url": "https://e714395d7c19.ngrok-free.app",
+        "mensaje": "🚀 Profesor Ayuni - Sistema Autónomo ACTIVO",
+        "version": "1.0",
         "endpoints": {
-            "buscar_pdf": "POST /buscar-pdf",
-            "archivos_disponibles": "GET /archivos-disponibles?carpeta=fisica_api"
+            "preguntar": "POST /preguntar",
+            "n8n_autenticar": "POST /n8n-autenticar",
+            "estado": "GET /estado"
         }
     }
 
 
-@app.get("/archivos-disponibles")
-async def archivos_disponibles(carpeta: str = "fisica_api"):
-    """Lista archivos disponibles a través de ngrok"""
+@app.get("/estado")
+async def estado():
+    """Verificar estado del sistema"""
+    return {
+        "estado": "🟢 FUNCIONANDO",
+        "gemini_configurado": bool(GEMINI_API_KEY),
+        "pdfs_configurados": len(BIBLIOTECA) > 0,
+        "total_usuarios": len(USUARIOS)
+    }
+
+
+# ==================== FUNCIONES AUXILIARES ====================
+
+def autenticar_usuario(usuario: str, clave: str) -> bool:
+    """Autenticación simple de usuarios"""
+    return usuario in USUARIOS and USUARIOS[usuario] == clave
+
+
+def seleccionar_pdf_inteligente(pregunta: str) -> str:
+    """Selecciona la carpeta más relevante para la pregunta"""
+    pregunta_lower = pregunta.lower()
+
+    # Lógica de selección por palabras clave
+    if any(palabra in pregunta_lower for palabra in ["civil", "estática", "estructura", "hibbeler", "mecánica"]):
+        return BIBLIOTECA["civil"]
+    elif any(palabra in pregunta_lower for palabra in ["admin", "sistema", "configuración", "usuario"]):
+        return BIBLIOTECA["admin"]
+    else:
+        return BIBLIOTECA["fisica"]  # Por defecto física
+
+
+def descargar_y_extraer_pdf(file_id: str) -> str:
+    """Descarga PDF de Google Drive y extrae texto"""
     try:
-        # Intentar listar archivos via ngrok
-        ngrok_url = f"https://e714395d7c19.ngrok-free.app/{carpeta}/"
-        response = requests.get(ngrok_url, timeout=10)
+        print(f"📥 Descargando PDF...")
+        url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        response = requests.get(url, timeout=30)
 
-        if response.status_code == 200:
-            # Si ngrok muestra lista de archivos (depende de la configuración)
-            return {
-                "carpeta": carpeta,
-                "archivos": "Listado disponible via ngrok",
-                "url_ngrok": ngrok_url
-            }
-        else:
-            # Lista manual de archivos conocidos
-            archivos_por_carpeta = {
-                "fisica_api": [
-                    "007-Física Tipler 5ta Ed. .pdf",
-                    "008-Física Tipler SOL ED5.pdf",
-                    "009-SearsZemanskyFisicaUniversitaria12va.Ed.Vol.1.pdf",
-                    "010-Sears Zemansky 12 ed - Vol 2 - Español.pdf",
-                    "Fisica_Universitaria_Sears_Zemansky_12va.pdf",
-                    "011-Solucionario Zemansky (inglés).pdf"
-                ],
-                "civil_api": [
-                    "020-Estática12ed-russelc-.pdf"
-                ],
-                "admin_api": [
-                    # Agregar archivos de admin si los tienes
-                ]
-            }
+        pdf_file = io.BytesIO(response.content)
+        reader = PyPDF2.PdfReader(pdf_file)
 
-            return {
-                "carpeta": carpeta,
-                "archivos": archivos_por_carpeta.get(carpeta, []),
-                "nota": "Lista manual - verificar disponibilidad en ngrok"
-            }
+        texto = ""
+        # Extraer primeras 5 páginas para prueba
+        for i in range(min(5, len(reader.pages))):
+            texto_pagina = reader.pages[i].extract_text() or ""
+            texto += f"--- Página {i + 1} ---\n{texto_pagina}\n\n"
+
+        print(f"✅ PDF procesado: {len(texto)} caracteres, {len(reader.pages)} páginas")
+        return texto[:10000]  # Limitar tamaño
 
     except Exception as e:
-        return {
-            "carpeta": carpeta,
-            "error": f"No se pudo obtener lista de archivos: {str(e)}"
-        }
+        error_msg = f"❌ Error procesando PDF: {str(e)}"
+        print(error_msg)
+        return error_msg
 
 
-@app.get("/test-ngrok")
-async def test_ngrok():
-    """Endpoint para probar la conexión con ngrok"""
+def consultar_gemini(texto_pdf: str, pregunta: str, usuario: str) -> str:
+    """Consulta a Google AI Studio (Gemini)"""
     try:
-        test_url = "https://e714395d7c19.ngrok-free.app/fisica_api/"
-        response = requests.get(test_url, timeout=10)
+        print(f"🧠 Consultando Gemini para {usuario}...")
+        model = genai.GenerativeModel('gemini-pro')
 
-        return {
-            "ngrok_status": "online" if response.status_code == 200 else "error",
-            "status_code": response.status_code,
-            "test_url": test_url
-        }
+        prompt = f"""
+        Eres el "Profesor Ayuni", un mentor virtual especializado en ingeniería mecánico-eléctrica.
+
+        CONTENIDO DEL LIBRO DE CONSULTA:
+        {texto_pdf}
+
+        PREGUNTA DEL ESTUDIANTE {usuario}:
+        {pregunta}
+
+        Por favor responde:
+        - De manera pedagógica pero técnica
+        - Basándote en el contenido del libro proporcionado
+        - Con ejemplos prácticos cuando sea posible
+        - En español claro y profesional
+        - Citando conceptos específicos del libro cuando sea relevante
+
+        Si la información no está en el libro, sé honesto y sugiere dónde podrían encontrarla.
+        """
+
+        response = model.generate_content(prompt)
+        print("✅ Respuesta recibida de Gemini")
+        return response.text
+
     except Exception as e:
-        return {
-            "ngrok_status": "error",
-            "error": str(e)
-        }
+        error_msg = f"❌ Error en Gemini: {str(e)}"
+        print(error_msg)
+        return error_msg
+
+
+def obtener_nombre_libro(file_id: str) -> str:
+    """Obtiene el nombre del libro basado en el file_id"""
+    if file_id == BIBLIOTECA["fisica"]:
+        return "Biblioteca de Física (Tipler, Sears-Zemansky)"
+    elif file_id == BIBLIOTECA["civil"]:
+        return "Biblioteca de Ingeniería Civil (Hibbeler)"
+    elif file_id == BIBLIOTECA["admin"]:
+        return "Biblioteca de Administración"
+    else:
+        return "Material de consulta"
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    print("🚀 Iniciando Servidor Profesor Ayuni...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
